@@ -118,3 +118,93 @@ def test_invalid_owner_time_window_raises_error():
 def test_time_helpers_round_trip():
     assert time_to_minutes("08:45") == 525
     assert minutes_to_time(525) == "08:45"
+
+
+def test_preferred_morning_task_comes_before_evening_task_when_other_rules_tie():
+    owner = Owner(name="Jordan", available_start="08:00", available_end="10:00")
+    pet = build_default_pet()
+    tasks = [
+        CareTask("Evening grooming", 10, priority="medium", preferred_time="evening"),
+        CareTask("Morning feeding prep", 10, priority="medium", preferred_time="morning"),
+    ]
+
+    plan = PawPalScheduler().build_plan(owner, pet, tasks)
+
+    assert [item.task.title for item in plan.items] == [
+        "Morning feeding prep",
+        "Evening grooming",
+    ]
+
+
+def test_empty_task_list_returns_empty_plan_with_warning():
+    owner = build_default_owner()
+    pet = build_default_pet()
+
+    plan = PawPalScheduler().build_plan(owner, pet, [])
+
+    assert plan.items == []
+    assert plan.skipped_tasks == []
+    assert "empty plan" in plan.warnings[0]
+
+
+def test_plan_rows_include_explanations_for_streamlit_display():
+    owner = build_default_owner()
+    pet = build_default_pet()
+    tasks = [CareTask("Give medicine", 5, priority="high", category="health")]
+
+    plan = PawPalScheduler().build_plan(owner, pet, tasks)
+    rows = plan.as_rows()
+
+    assert rows[0]["Task"] == "Give medicine"
+    assert rows[0]["Priority"] == "high"
+    assert "high priority" in rows[0]["Reason"]
+
+
+def test_skipped_rows_include_reason_for_streamlit_display():
+    owner = Owner(name="Jordan", available_start="08:00", available_end="08:10")
+    pet = build_default_pet()
+    tasks = [
+        CareTask("Very long walk", 60, priority="high", category="exercise"),
+    ]
+
+    plan = PawPalScheduler().build_plan(owner, pet, tasks)
+    rows = plan.skipped_rows()
+
+    assert rows[0]["Task"] == "Very long walk"
+    assert "Not enough time left" in rows[0]["Reason"]
+
+
+def test_break_minutes_can_cause_later_task_to_be_skipped():
+    owner = Owner(
+        name="Jordan",
+        available_start="08:00",
+        available_end="08:40",
+        break_minutes=15,
+    )
+    pet = build_default_pet()
+    tasks = [
+        CareTask("Walk", 25, priority="high", category="exercise"),
+        CareTask("Feed", 10, priority="high", category="feeding"),
+    ]
+
+    plan = PawPalScheduler().build_plan(owner, pet, tasks)
+
+    assert [item.task.title for item in plan.items] == ["Walk"]
+    assert [skipped.task.title for skipped in plan.skipped_tasks] == ["Feed"]
+
+
+def test_low_energy_pet_health_task_gets_matching_explanation():
+    owner = build_default_owner()
+    pet = Pet(name="Mochi", species="dog", energy_level="low")
+    tasks = [
+        CareTask(
+            "Gentle brushing",
+            10,
+            priority="medium",
+            category="grooming",
+        )
+    ]
+
+    plan = PawPalScheduler().build_plan(owner, pet, tasks)
+
+    assert "lower-energy pet" in plan.items[0].explanation

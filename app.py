@@ -1,3 +1,7 @@
+import csv
+from datetime import time
+from io import StringIO
+
 import streamlit as st
 
 from pawpal import CareTask, Owner, PawPalScheduler, Pet, ScheduleError
@@ -65,7 +69,7 @@ def initialize_state() -> None:
 
 
 def reset_demo_tasks() -> None:
-    """Reset the app to a useful demo task list."""
+    """Reset the app to a strong demo task list."""
 
     st.session_state.tasks = [
         {
@@ -76,7 +80,7 @@ def reset_demo_tasks() -> None:
             "preferred_time": "morning",
             "required": True,
             "recurring": True,
-            "notes": "Important for exercise and bathroom needs.",
+            "notes": "Important for exercise, bathroom needs, and high-energy pets.",
         },
         {
             "title": "Give medication",
@@ -86,7 +90,7 @@ def reset_demo_tasks() -> None:
             "preferred_time": "morning",
             "required": True,
             "recurring": True,
-            "notes": "Required health task.",
+            "notes": "Required health task that should not be skipped.",
         },
         {
             "title": "Dinner feeding",
@@ -119,6 +123,8 @@ def reset_demo_tasks() -> None:
             "notes": "Can be skipped when the day is too busy.",
         },
     ]
+    st.session_state.last_plan_rows = []
+    st.session_state.last_skipped_rows = []
 
 
 def task_from_dict(task_data: dict) -> CareTask:
@@ -136,35 +142,132 @@ def task_from_dict(task_data: dict) -> CareTask:
     )
 
 
-def display_task_cards() -> None:
-    """Show the current tasks with delete buttons."""
+def rows_to_csv(rows: list[dict]) -> str:
+    """Convert schedule rows into downloadable CSV text."""
+
+    if not rows:
+        return ""
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def display_task_editor() -> None:
+    """Show current tasks and allow editing/deleting."""
 
     if not st.session_state.tasks:
         st.info("No tasks yet. Add at least one task before generating a plan.")
         return
 
     for index, task in enumerate(st.session_state.tasks):
-        with st.container(border=True):
-            col1, col2, col3, col4 = st.columns([3, 1.3, 1.3, 1])
+        required_text = "Required" if task["required"] else "Optional"
+        recurring_text = "Recurring today" if task["recurring"] else "Not recurring today"
+        label = (
+            f"{index + 1}. {task['title']} — {task['duration_minutes']} min, "
+            f"{task['priority']} priority, {required_text}, {recurring_text}"
+        )
 
-            with col1:
-                required_text = "Required" if task["required"] else "Optional"
-                recurring_text = "Recurring today" if task["recurring"] else "Not recurring today"
-                st.markdown(f"**{index + 1}. {task['title']}**")
-                st.caption(f"{task['category']} • {required_text} • {recurring_text}")
-                if task["notes"]:
-                    st.write(task["notes"])
+        with st.expander(label, expanded=False):
+            st.caption("Edit this task, save changes, or delete it.")
 
-            with col2:
-                st.metric("Duration", f"{task['duration_minutes']} min")
+            with st.form(f"edit_task_form_{index}"):
+                edited_title = st.text_input(
+                    "Task title",
+                    value=task["title"],
+                    key=f"edit_title_{index}",
+                )
 
-            with col3:
-                st.metric("Priority", task["priority"])
+                edit_col1, edit_col2, edit_col3 = st.columns(3)
 
-            with col4:
-                if st.button("Delete", key=f"delete_{index}"):
-                    st.session_state.tasks.pop(index)
-                    st.rerun()
+                with edit_col1:
+                    edited_duration = st.number_input(
+                        "Duration in minutes",
+                        min_value=1,
+                        max_value=240,
+                        value=int(task["duration_minutes"]),
+                        key=f"edit_duration_{index}",
+                    )
+                    edited_priority = st.selectbox(
+                        "Priority",
+                        ["low", "medium", "high"],
+                        index=["low", "medium", "high"].index(task["priority"]),
+                        key=f"edit_priority_{index}",
+                    )
+
+                with edit_col2:
+                    category_options = [
+                        "feeding",
+                        "health",
+                        "exercise",
+                        "walk",
+                        "play",
+                        "training",
+                        "grooming",
+                        "rest",
+                        "general",
+                    ]
+                    edited_category = st.selectbox(
+                        "Category",
+                        category_options,
+                        index=category_options.index(task["category"])
+                        if task["category"] in category_options
+                        else category_options.index("general"),
+                        key=f"edit_category_{index}",
+                    )
+                    preferred_options = ["morning", "afternoon", "evening", "any"]
+                    edited_preferred_time = st.selectbox(
+                        "Preferred time",
+                        preferred_options,
+                        index=preferred_options.index(task["preferred_time"]),
+                        key=f"edit_preferred_{index}",
+                    )
+
+                with edit_col3:
+                    edited_required = st.checkbox(
+                        "Required task",
+                        value=bool(task["required"]),
+                        key=f"edit_required_{index}",
+                    )
+                    edited_recurring = st.checkbox(
+                        "Recurring today",
+                        value=bool(task["recurring"]),
+                        key=f"edit_recurring_{index}",
+                    )
+
+                edited_notes = st.text_area(
+                    "Notes / reason",
+                    value=task["notes"],
+                    key=f"edit_notes_{index}",
+                )
+
+                save_clicked = st.form_submit_button("Save task changes")
+
+                if save_clicked:
+                    if not edited_title.strip():
+                        st.error("Task title cannot be blank.")
+                    else:
+                        st.session_state.tasks[index] = {
+                            "title": edited_title.strip(),
+                            "duration_minutes": int(edited_duration),
+                            "priority": edited_priority,
+                            "category": edited_category,
+                            "preferred_time": edited_preferred_time,
+                            "required": edited_required,
+                            "recurring": edited_recurring,
+                            "notes": edited_notes.strip(),
+                        }
+                        st.session_state.last_plan_rows = []
+                        st.session_state.last_skipped_rows = []
+                        st.success(f"Updated task: {edited_title.strip()}")
+
+            if st.button("Delete this task", key=f"delete_task_{index}"):
+                st.session_state.tasks.pop(index)
+                st.session_state.last_plan_rows = []
+                st.session_state.last_skipped_rows = []
+                st.rerun()
 
 
 def build_owner(owner_name: str, start_time, end_time, short_first: bool, break_minutes: int) -> Owner:
@@ -197,17 +300,21 @@ def build_pet(pet_name: str, species: str, age_years: float, energy_level: str) 
 initialize_state()
 
 st.title("🐾 PawPal+")
-st.caption("A pet care planning assistant that builds a daily schedule from time, priority, and owner preferences.")
+st.caption(
+    "A pet care planning assistant that builds a daily schedule from time, priority, "
+    "recurrence, required status, and owner preferences."
+)
 
 with st.expander("Project scenario", expanded=False):
     st.markdown(
         """
         PawPal+ helps a busy pet owner organize daily care tasks such as feeding,
-        walks, medicine, enrichment, grooming, and training.
+        walks, medicine, enrichment, grooming, rest, and training.
 
-        This version uses a real backend scheduler. It ranks tasks by required status,
-        priority, preferred time, and owner preferences. Then it builds a schedule that
-        fits inside the owner's available time window and explains every choice.
+        This version uses a real backend scheduler instead of placeholder UI logic.
+        It ranks tasks by required status, priority, preferred time, and owner preferences.
+        Then it builds a non-overlapping schedule inside the owner's available time window
+        and explains every scheduled or skipped task.
         """
     )
 
@@ -228,8 +335,8 @@ with left_col:
     energy_level = st.selectbox("Pet energy level", ["low", "medium", "high"], index=2)
 
     st.subheader("Daily constraints")
-    available_start = st.time_input("Owner available start", value="08:00")
-    available_end = st.time_input("Owner available end", value="12:00")
+    available_start = st.time_input("Owner available start", value=time(8, 0))
+    available_end = st.time_input("Owner available end", value=time(12, 0))
     break_minutes = st.number_input("Break between tasks, in minutes", min_value=0, max_value=60, value=5)
     prefers_short_tasks_first = st.checkbox(
         "Prefer shorter tasks first when priority is tied",
@@ -237,8 +344,8 @@ with left_col:
     )
 
     st.info(
-        "Tip: To test skipping behavior, make the available window shorter, "
-        "such as 8:00 AM to 9:00 AM."
+        "To demonstrate skipped tasks, load the strong demo tasks and set the available window "
+        "to 8:00 AM–8:45 AM."
     )
 
 # ---------------------------------------------------------------------
@@ -284,6 +391,8 @@ with right_col:
                         "notes": notes.strip(),
                     }
                 )
+                st.session_state.last_plan_rows = []
+                st.session_state.last_skipped_rows = []
                 st.success(f"Added task: {task_title.strip()}")
 
     task_button_col1, task_button_col2 = st.columns(2)
@@ -295,17 +404,19 @@ with right_col:
     with task_button_col2:
         if st.button("Clear all tasks"):
             st.session_state.tasks = []
+            st.session_state.last_plan_rows = []
+            st.session_state.last_skipped_rows = []
             st.rerun()
 
 
 st.divider()
 
 # ---------------------------------------------------------------------
-# Task list and schedule generation
+# Task editor and schedule generation
 # ---------------------------------------------------------------------
 
 st.header("3. Current task list")
-display_task_cards()
+display_task_editor()
 
 st.divider()
 
@@ -318,8 +429,8 @@ with generate_col:
 
 with summary_col:
     st.write(
-        "The scheduler will place tasks in order, avoid overlap, skip tasks that do not fit, "
-        "and explain why each task was selected."
+        "The scheduler places tasks in order, avoids overlap, skips tasks that do not fit, "
+        "and explains why each task was selected or skipped."
     )
 
 if generate_clicked:
@@ -377,6 +488,14 @@ if st.session_state.last_plan_rows:
     st.subheader("Scheduled plan")
     st.dataframe(st.session_state.last_plan_rows, use_container_width=True, hide_index=True)
 
+    schedule_csv = rows_to_csv(st.session_state.last_plan_rows)
+    st.download_button(
+        "Download scheduled plan as CSV",
+        data=schedule_csv,
+        file_name="pawpal_daily_schedule.csv",
+        mime="text/csv",
+    )
+
     with st.expander("Plain-English explanation", expanded=True):
         for row in st.session_state.last_plan_rows:
             st.markdown(
@@ -390,6 +509,14 @@ else:
 if st.session_state.last_skipped_rows:
     st.subheader("Skipped tasks")
     st.dataframe(st.session_state.last_skipped_rows, use_container_width=True, hide_index=True)
+
+    skipped_csv = rows_to_csv(st.session_state.last_skipped_rows)
+    st.download_button(
+        "Download skipped tasks as CSV",
+        data=skipped_csv,
+        file_name="pawpal_skipped_tasks.csv",
+        mime="text/csv",
+    )
 
     with st.expander("Why tasks were skipped", expanded=True):
         for row in st.session_state.last_skipped_rows:
@@ -419,8 +546,10 @@ with st.expander("How the scheduler works"):
         4. Add tasks one by one into the available time window.
         5. Skip any task that does not fit and explain why.
 
-        This is a reasonable design for a daily care assistant because required and
+        This design is reasonable for a daily pet care assistant because required and
         high-priority tasks, such as feeding and medicine, should come before optional
-        enrichment tasks.
+        enrichment tasks. The tradeoff is that the scheduler is predictable and easy to
+        explain, but it may not always find the mathematically perfect combination of
+        tasks for every possible schedule.
         """
     )
